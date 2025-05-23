@@ -1,0 +1,8 @@
+Flask
+python-dotenv
+requests
+werkzeug
+pdfminer.six
+python-docx
+numpy
+reportlab

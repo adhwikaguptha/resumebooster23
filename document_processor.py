@@ -10,6 +10,12 @@ from io import BytesIO
 from docx import Document
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+from transformers import AutoTokenizer, AutoModel
+import torch
+
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+_tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+_model = AutoModel.from_pretrained(MODEL_NAME)
 
 def pdf_extract_text(file_path):
     """Extract text from a PDF file using pdfminer"""
@@ -44,36 +50,38 @@ def extract_text(file_path):
         return text
     else:
         raise ValueError(f"Unsupported file format: {file_extension}")
+    
+def mean_pooling(model_output, attention_mask):
+    token_embeddings = model_output[0]  # First element: token embeddings
+    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+    return (token_embeddings * input_mask_expanded).sum(1) / input_mask_expanded.sum(1)
 
 def calculate_ats_score(resume_text, job_description):
     """
-    Calculate semantic similarity between resume and job description
-    Since we don't have sentence-transformers available, we'll use a simple
-    keyword-based approach as a fallback
+    Calculates semantic similarity score between resume and job description
+    using transformer embeddings.
     """
-    # Normalize inputs
-    resume_text = resume_text.lower()
-    job_description = job_description.lower()
-    
-    # Extract words (excluding common stop words)
-    stop_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'is', 'are', 'was', 'were'}
-    job_desc_words = set([word.strip('.,;:()"\'-') for word in job_description.split() if word.strip('.,;:()"\'-').lower() not in stop_words])
-    
-    # Count matching words
-    matches = 0
-    for word in job_desc_words:
-        if word and len(word) > 2 and word in resume_text:  # Skip empty and very short words
-            matches += 1
-    
-    # Calculate score (0 to 1)
-    if len(job_desc_words) > 0:
-        score = matches / len(job_desc_words)
-    else:
-        score = 0
-        
-    # Apply some normalization to make score distribution more realistic
-    score = np.clip(score * 1.5, 0, 1)  # Inflate score slightly, but cap at 1
-    return score
+    # Tokenize and encode
+    encoded_input = _tokenizer(
+        [resume_text, job_description],
+        padding=True,
+        truncation=True,
+        return_tensors='pt'
+    )
+
+    with torch.no_grad():
+        model_output = _model(**encoded_input)
+
+    # Mean Pooling
+    embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
+
+    # Normalize
+    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+
+    # Cosine similarity
+    similarity = torch.nn.functional.cosine_similarity(embeddings[0], embeddings[1], dim=0)
+
+    return similarity.item()
 
 def create_docx(text):
     """
